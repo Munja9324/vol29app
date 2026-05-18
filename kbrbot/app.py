@@ -524,6 +524,7 @@ pending_smart_actions: dict[int, dict[str, object]] = {}
 pending_support_requests: dict[int, dict[str, object]] = {}
 pending_direct_mail_requests: dict[int, dict[str, object]] = {}
 non_requester_help_attempts: dict[int, dict[str, object]] = {}
+requester_public_mode_enabled: dict[int, bool] = {}
 last_reply_sent_at_by_chat: dict[int, float] = {}
 last_reply_sent_at_lock = asyncio.Lock()
 active_gpt_requests: dict[int, dict[str, object]] = {}
@@ -5300,38 +5301,30 @@ def parse_template_command(text: str) -> tuple[str, str] | None:
 
 def parse_scan_menu_action(text: str, allow_numeric: bool = False) -> str | None:
     cleaned = text.strip().casefold()
-    if cleaned in {"/scan", "scan", "СЃРєР°РЅ"}:
-        return "menu"
-    if cleaned in {"/scan_new", "scan new", "new scan", "РЅРѕРІС‹Р№ scan", "РЅРѕРІС‹Р№ СЃРєР°РЅ", "РЅР°С‡Р°С‚СЊ СЃРєР°РЅ", "Р·Р°РїСѓСЃС‚Рё СЃРєР°РЅ"}:
-        return "new"
-    if cleaned in {
-        "/scan_start",
-        "/scan_continue",
-        "scan start",
-        "scan continue",
-        "continue scan",
-        "start scan",
-        "РїСЂРѕРґРѕР»Р¶РёС‚СЊ scan",
-        "РїСЂРѕРґРѕР»Р¶РёС‚СЊ СЃРєР°РЅ",
-        "РїСЂРѕРґРѕР»Р¶Рё СЃРєР°РЅ",
-    }:
-        return "continue"
-    if cleaned in {
-        "/stopscan",
-        "stop scan",
-        "stop СЃРєР°РЅ",
-        "СЃС‚РѕРї СЃРєР°РЅ",
-        "scan stop",
-        "scan pause",
-        "pause scan",
-        "РїР°СѓР·Р° scan",
-        "РїР°СѓР·Р° СЃРєР°РЅ",
-        "РѕСЃС‚Р°РЅРѕРІРёС‚СЊ scan",
-        "РѕСЃС‚Р°РЅРѕРІРёС‚СЊ СЃРєР°РЅ",
-    }:
-        return "pause_results"
+    if not cleaned:
+        return None
+
+    # Slash command family: /scan, /scan new, /scan continue, etc.
+    scan_cmd_match = re.match(r"^/scan(?:\s+(?P<arg>.+))?$", cleaned)
+    if scan_cmd_match:
+        arg = str(scan_cmd_match.group("arg") or "").strip()
+        if not arg:
+            return "menu"
+        if arg in {"scan", "new", "start", "run"}:
+            return "new"
+        if arg in {"continue", "resume"}:
+            return "continue"
+        if arg in {"results", "result", "status"}:
+            return "results"
+        if arg in {"pause", "stop"}:
+            return "pause_results"
+        if arg in {"reset"}:
+            return "reset"
+
     mapping = {
-        "/scan": "start",
+        "/scan": "menu",
+        "scan": "menu",
+        "СЃРєР°РЅ": "menu",
         "/scanmenu": "menu",
         "scan menu": "menu",
         "scan status": "menu",
@@ -5340,33 +5333,45 @@ def parse_scan_menu_action(text: str, allow_numeric: bool = False) -> str | None
         "СЃРєР°РЅС‹": "menu",
         "РјРµРЅСЋ СЃРєР°РЅ": "menu",
         "РјРµРЅСЋ СЃРєР°РЅРѕРІ": "menu",
-        "/scan_start": "start",
-        "scan": "start",
-        "СЃРєР°РЅ": "start",
-        "scan start": "start",
-        "scan new": "start",
-        "start scan": "start",
-        "РЅРѕРІС‹Р№ СЃРєР°РЅ": "start",
-        "РЅРѕРІС‹Р№ scan": "start",
-        "Р·Р°РїСѓСЃС‚Рё СЃРєР°РЅ": "start",
-        "РЅР°С‡Р°С‚СЊ СЃРєР°РЅ": "start",
-        "РїСЂРѕРґРѕР»Р¶РёС‚СЊ СЃРєР°РЅ": "start",
-        "РїСЂРѕРґРѕР»Р¶Рё СЃРєР°РЅ": "start",
-        "/stopscan": "pause",
-        "/scan_pause": "pause",
-        "scan pause": "pause",
-        "scan stop": "pause",
-        "pause scan": "pause",
-        "stop scan": "pause",
-        "РїР°СѓР·Р° СЃРєР°РЅ": "pause",
-        "РїРѕСЃС‚Р°РІСЊ СЃРєР°РЅ РЅР° РїР°СѓР·Сѓ": "pause",
-        "РѕСЃС‚Р°РЅРѕРІРёС‚СЊ СЃРєР°РЅ": "pause",
+
+        "/scan_new": "new",
+        "/scan_start": "new",
+        "scan new": "new",
+        "new scan": "new",
+        "scan start": "new",
+        "start scan": "new",
+        "РЅРѕРІС‹Р№ scan": "new",
+        "РЅРѕРІС‹Р№ СЃРєР°РЅ": "new",
+        "РЅР°С‡Р°С‚СЊ СЃРєР°РЅ": "new",
+        "Р·Р°РїСѓСЃС‚Рё СЃРєР°РЅ": "new",
+
+        "/scan_continue": "continue",
+        "scan continue": "continue",
+        "continue scan": "continue",
+        "РїСЂРѕРґРѕР»Р¶РёС‚СЊ scan": "continue",
+        "РїСЂРѕРґРѕР»Р¶РёС‚СЊ СЃРєР°РЅ": "continue",
+        "РїСЂРѕРґРѕР»Р¶Рё СЃРєР°РЅ": "continue",
+
+        "/stopscan": "pause_results",
+        "/scan_pause": "pause_results",
+        "stop scan": "pause_results",
+        "stop СЃРєР°РЅ": "pause_results",
+        "СЃС‚РѕРї СЃРєР°РЅ": "pause_results",
+        "scan stop": "pause_results",
+        "scan pause": "pause_results",
+        "pause scan": "pause_results",
+        "РїР°СѓР·Р° scan": "pause_results",
+        "РїР°СѓР·Р° СЃРєР°РЅ": "pause_results",
+        "РѕСЃС‚Р°РЅРѕРІРёС‚СЊ scan": "pause_results",
+        "РѕСЃС‚Р°РЅРѕРІРёС‚СЊ СЃРєР°РЅ": "pause_results",
+
         "/scan_reset": "reset",
         "scan reset": "reset",
         "reset scan": "reset",
         "СЃР±СЂРѕСЃ СЃРєР°РЅР°": "reset",
         "СЃР±СЂРѕСЃРёС‚СЊ СЃРєР°РЅ": "reset",
         "СЃР±СЂРѕСЃ scan": "reset",
+
         "/scan_results": "results",
         "scan results": "results",
         "scan result": "results",
@@ -5500,9 +5505,11 @@ def is_explicit_requester_command_input(text: str, sender_id: int) -> bool:
         return True
     if is_version_command(raw_text) or is_diagnostics_command(raw_text) or is_status_command(raw_text):
         return True
-    if is_admin_site_command(raw_text) or is_poc_command(raw_text) or is_roots_command(raw_text):
+    if is_admin_site_command(raw_text) or is_root_panel_command(raw_text) or is_poc_command(raw_text) or is_roots_command(raw_text):
         return True
     if parse_logs_command(raw_text) is not None or parse_unresolved_command(raw_text) is not None:
+        return True
+    if parse_template_command(raw_text) is not None:
         return True
     if parse_gpt_command(raw_text) is not None:
         return True
@@ -5746,7 +5753,6 @@ def build_command_menu_buttons():
         [Button.text("scan"), Button.text("scan results")],
         [Button.text("/dashboard"), Button.text("/adminsite"), Button.text("/diag")],
         [Button.text("/processes"), Button.text("/tail")],
-        [Button.text("/gpt"), Button.text("/gpt reset")],
         [Button.text("menu")],
         [Button.text("scan new"), Button.text("scan continue")],
         [Button.text("stop СЃРєР°РЅ"), Button.text("scan reset")],
@@ -15781,9 +15787,38 @@ async def handle_private_message(event: events.NewMessage.Event) -> None:
     simulated_text = incoming_text
     if requester_allowed and incoming_text:
         lowered = incoming_text.casefold()
-        if lowered == "-p" or lowered.startswith("-p "):
+        if lowered == "-pp":
+            requester_public_mode_enabled.pop(sender_id, None)
+            log_action_event("public_mode", sender_id=sender_id, state="off")
+            await safe_event_reply(
+                event,
+                assistant_compact_reply(
+                    "Режим обычного пользователя выключен.",
+                    "Команды снова работают в обычном режиме.",
+                ),
+            )
+            return
+        if lowered == "-p":
+            requester_public_mode_enabled[sender_id] = True
+            log_action_event("public_mode", sender_id=sender_id, state="on")
+            await safe_event_reply(
+                event,
+                assistant_compact_reply(
+                    "Режим обычного пользователя включен.",
+                    "Пишите обычные сообщения как пользователь. Для выхода: -pp",
+                ),
+            )
+            return
+        if lowered.startswith("-p "):
+            requester_public_mode_enabled[sender_id] = True
             simulate_public_mode = True
             simulated_text = incoming_text[2:].strip()
+        elif requester_public_mode_enabled.get(sender_id):
+            # In persistent public mode we still allow explicit requester commands
+            # so admin controls do not appear "broken".
+            if not is_explicit_requester_command_input(incoming_text, sender_id) and not is_roots_command(incoming_text):
+                simulate_public_mode = True
+                simulated_text = incoming_text
 
     log_action_event(
         "incoming_message",
@@ -15793,6 +15828,7 @@ async def handle_private_message(event: events.NewMessage.Event) -> None:
         full_name=sender_full_name(sender),
         is_requester=requester_allowed,
         simulate_public_mode=simulate_public_mode,
+        persistent_public_mode=bool(requester_public_mode_enabled.get(sender_id)),
         is_voice=is_voice_or_audio_message(event),
         text=incoming_text,
     )
@@ -15818,7 +15854,18 @@ async def handle_private_message(event: events.NewMessage.Event) -> None:
         await handle_roots_command(event, sender)
         return
 
+    if roots_empty and not requester_allowed and incoming_text.startswith("/"):
+        await safe_event_reply(
+            event,
+            assistant_compact_reply(
+                "Список запросников пуст, поэтому служебные команды пока отключены.",
+                "Отправьте: /roots add me",
+            ),
+        )
+        return
+
     if not requester_allowed:
+        requester_public_mode_enabled.pop(sender_id, None)
         log_action_event("route", sender_id=sender_id, route="non_requester", text=incoming_text)
         await handle_non_requester_message(event, sender, sender_id, incoming_text)
         return
