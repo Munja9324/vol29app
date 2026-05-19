@@ -141,11 +141,19 @@ def sanitize_buttons(buttons):
     if Button is None:  # pragma: no cover
         return buttons
 
+    def resolve_button_value(value):
+        if callable(value):
+            try:
+                value = value()
+            except Exception:
+                return None
+        return value
+
     def sanitize_button(btn):
         try:
             text = sanitize_outgoing_text(str(getattr(btn, "text", "") or ""))
-            data = getattr(btn, "data", None)
-            url = getattr(btn, "url", None)
+            data = resolve_button_value(getattr(btn, "data", None))
+            url = resolve_button_value(getattr(btn, "url", None))
             if data is not None:
                 return Button.inline(text, data=data)
             if url:
