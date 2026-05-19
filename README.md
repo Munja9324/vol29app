@@ -87,6 +87,9 @@ stop scan
 - `vpn_kbr.py` — точка входа
 - `kbrbot/app.py` — основная логика
 - `docs/RU_FULL_GUIDE.md` — полная инструкция
+- `deploy/bootstrap_server.sh` — первичный разворот сервера без xray
+- `deploy/update_from_github.sh` — обновление сервера из GitHub
+- `deploy/vol29app.service` — systemd unit
 - `.env` — конфиг и секреты
 - `scan-data.sqlite3` — локальная база
 - `userbot.log` — лог

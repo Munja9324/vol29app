@@ -156,6 +156,35 @@ stop scan
 
 Скрипт делает precheck, push и рестарт сервиса на сервере.
 
+### Полный разворот нового сервера без xray
+
+На новом европейском сервере `xray` не нужен.
+
+1. Добавьте SSH-ключ root-пользователю.
+2. Скопируйте или клонируйте проект в `/root/vol29app`.
+3. Запустите bootstrap:
+
+```bash
+bash /root/vol29app/deploy/bootstrap_server.sh <repo-url> main
+```
+
+4. Положите в `/root/vol29app`:
+- `.env`
+- `*.session`
+
+5. Выполните:
+
+```bash
+bash /root/vol29app/deploy/update_from_github.sh
+```
+
+Что делает bootstrap:
+- ставит `git`, `python3`, `venv`;
+- создаёт `.venv`;
+- ставит зависимости;
+- устанавливает `vol29app.service`;
+- включает и запускает сервис.
+
 ## 11) Безопасность
 
 Никогда не отправляйте в Git:

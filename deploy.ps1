@@ -7,7 +7,7 @@ $ErrorActionPreference = "Stop"
 $Repo = "C:\Project"
 $Remote = "origin"
 $Branch = "main"
-$Server = "root@176.124.222.183"
+$Server = "root@46.226.163.139"
 $KeyPath = Join-Path $env:USERPROFILE ".ssh\codex_kvm_ed25519"
 $PrecheckLog = Join-Path $Repo "deploy-precheck.log"
 
@@ -111,4 +111,4 @@ if ($staged.Count -gt 0) {
     Write-Host "No safe code changes to commit."
 }
 
-ssh -i $KeyPath -o BatchMode=yes $Server "systemctl restart vol29app && systemctl is-active vol29app && tail -n 30 /root/vol29app/deploy/update_from_github.log"
+ssh -i $KeyPath -o BatchMode=yes $Server "bash /root/vol29app/deploy/update_from_github.sh && tail -n 30 /root/vol29app/deploy/update_from_github.log"

@@ -984,18 +984,18 @@ def gpt_failed_message(error_text: str = "") -> str:
         )
     if reason == "proxy_https":
         return assistant_compact_reply(
-            "РћС€РёР±РєР° СЃРѕРµРґРёРЅРµРЅРёСЏ KBR_GPT.",
-            "Р—Р°РїСЂРѕСЃ РґРѕС€РµР» РґРѕ OpenAI, РЅРѕ РїСЂРѕРєСЃРё РёР»Рё РјР°СЂС€СЂСѓС‚ РІРµСЂРЅСѓР» РѕС€РёР±РєСѓ HTTPS. РџСЂРѕРІРµСЂСЊС‚Рµ xray Рё OPENAI_PROXY_URL.",
+            "Ошибка соединения KBR_GPT.",
+            "Запрос дошел до OpenAI, но прокси или маршрут вернул ошибку HTTPS. Проверьте сетевой маршрут и OPENAI_PROXY_URL.",
         )
     if reason == "dns":
         return assistant_compact_reply(
-            "РћС€РёР±РєР° СЃРѕРµРґРёРЅРµРЅРёСЏ KBR_GPT.",
-            "РЎРµР№С‡Р°СЃ РїСЂРѕР±Р»РµРјР° СЃ DNS РёР»Рё РґРѕСЃС‚СѓРїРѕРј Рє СЃРµС‚Рё РЅР° СЃРµСЂРІРµСЂРµ.",
+            "Ошибка соединения KBR_GPT.",
+            "Сейчас проблема с DNS или доступом к сети на сервере.",
         )
     if reason == "tcp_blocked":
         return assistant_compact_reply(
-            "РћС€РёР±РєР° СЃРѕРµРґРёРЅРµРЅРёСЏ KBR_GPT.",
-            "DNS СЂР°Р±РѕС‚Р°РµС‚, РЅРѕ СЃРµСЂРІРµСЂ РЅРµ РјРѕР¶РµС‚ РѕС‚РєСЂС‹С‚СЊ HTTPS-СЃРѕРµРґРёРЅРµРЅРёРµ СЃ OpenAI. РџСЂРѕРІРµСЂСЊС‚Рµ xray РёР»Рё РїСЂРѕРєСЃРё.",
+            "Ошибка соединения KBR_GPT.",
+            "DNS работает, но сервер не может открыть HTTPS-соединение с OpenAI. Проверьте маршрут и прокси-настройки, если они включены.",
         )
     if reason == "connection":
         return assistant_compact_reply(
@@ -9930,7 +9930,7 @@ def load_latest_record_from_database_with_conn(conn: sqlite3.Connection, user_id
 
 
 def dashboard_server_services_payload() -> dict[str, object]:
-    services = ["vol29app", "xray", "ssh", "cron", "nginx"]
+    services = ["vol29app", "ssh", "cron", "nginx"]
     rows: list[dict[str, str]] = []
     for name in services:
         try:
@@ -13324,13 +13324,24 @@ def build_scan_results_text() -> str:
     return "\n".join(lines)
 
 
+def normalize_button_url_value(value) -> str:
+    if callable(value):
+        try:
+            value = value()
+        except Exception:
+            logging.exception("Failed to resolve callable button URL")
+            return ""
+    return str(value or "").strip()
+
+
 def dashboard_target_url(url: str, fallback_path: Path | None = None, *, admin_url: str | None = None) -> str:
-    admin_url = admin_url if admin_url is not None else live_admin_dashboard_url()
+    admin_url = normalize_button_url_value(admin_url if admin_url is not None else live_admin_dashboard_url())
     if admin_url and re.match(r"^https?://", admin_url, flags=re.IGNORECASE):
         return admin_url
+    url = normalize_button_url_value(url)
     if url and re.match(r"^https?://", url, flags=re.IGNORECASE):
         return url
-    return str(fallback_path or "")
+    return normalize_button_url_value(fallback_path)
 
 
 def dashboard_link_buttons(url: str, fallback_path: Path | None = None, *, admin_url: str | None = None):
@@ -13362,7 +13373,7 @@ async def send_live_admin_dashboard_link(event) -> bool:
 
 
 async def send_live_root_panel_link(event) -> bool:
-    root_url = live_root_panel_url()
+    root_url = normalize_button_url_value(live_root_panel_url())
     if not root_url or not re.match(r"^https?://", root_url, flags=re.IGNORECASE):
         await safe_event_reply(event, "Root panel СЃРµР№С‡Р°СЃ РЅРµРґРѕСЃС‚СѓРїРЅР°. РџСЂРѕРІРµСЂСЊ DASHBOARD_HTTP_* Рё DASHBOARD_PUBLIC_*.")
         return False
@@ -13375,7 +13386,7 @@ async def send_live_root_panel_link(event) -> bool:
 
 
 async def send_system_panel_link(event) -> bool:
-    target = system_panel_url()
+    target = normalize_button_url_value(system_panel_url())
     if not target or not re.match(r"^https?://", target, flags=re.IGNORECASE):
         await safe_event_reply(event, "System panel URL РЅРµ РЅР°СЃС‚СЂРѕРµРЅ.")
         return False

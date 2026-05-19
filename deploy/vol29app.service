@@ -1,0 +1,16 @@
+[Unit]
+Description=Vpn_Bot_assist
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/vol29app
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/root/vol29app/.venv/bin/python /root/vol29app/vpn_kbr.py
+Restart=always
+RestartSec=5
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target
