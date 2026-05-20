@@ -544,6 +544,7 @@ dashboard_action_jobs_lock = threading.Lock()
 DASHBOARD_ACTION_JOBS_LIMIT = 300
 dashboard_api_cache_lock = threading.Lock()
 dashboard_api_cache: dict[str, tuple[float, dict[str, object]]] = {}
+DASHBOARD_REALTIME_CACHE_PREFIXES = ("admin-api::overview::", "root-api::users::", "root-api::user::")
 STATUS_EDIT_MIN_INTERVAL_SECONDS = max(0.25, env_float("STATUS_EDIT_MIN_INTERVAL_SECONDS", 0.7))
 status_edit_state: dict[int, tuple[float, str]] = {}
 ADMIN_CONVERSATION_MAX_MESSAGES = max(5000, env_int("ADMIN_CONVERSATION_MAX_MESSAGES", 120000))
@@ -5491,6 +5492,19 @@ def current_pending_workflow_name(sender_id: int) -> str:
     return ""
 
 
+def cancel_pending_requester_workflows(sender_id: int) -> list[str]:
+    cancelled: list[str] = []
+    if pending_wizard_requests.pop(sender_id, None) is not None:
+        cancelled.append("wizard")
+    if pending_mail2_requests.pop(sender_id, None) is not None:
+        cancelled.append("mail2")
+    if pending_direct_mail_requests.pop(sender_id, None) is not None:
+        cancelled.append("mail")
+    if pending_support_requests.pop(sender_id, None) is not None:
+        cancelled.append("support")
+    return cancelled
+
+
 def is_explicit_requester_command_input(text: str, sender_id: int) -> bool:
     raw_text = str(text or "").strip()
     if not raw_text:
@@ -7654,7 +7668,7 @@ def build_live_root_panel_html() -> str:
       refreshScanNotice();
       loadActionsLog();
       loadErrorsLog();
-    }}, 15000);
+    }}, 3000);
   </script>
 </body>
 </html>"""
@@ -7983,6 +7997,11 @@ def dashboard_get_job(job_id: str) -> dict[str, object] | None:
 def dashboard_api_cache_get(key: str) -> dict[str, object] | None:
     if not settings.dashboard_api_cache_enabled:
         return None
+    if (
+        bool(active_scan_cancel_event and not active_scan_cancel_event.is_set())
+        and any(key.startswith(prefix) for prefix in DASHBOARD_REALTIME_CACHE_PREFIXES)
+    ):
+        return None
     now_ts = now_timestamp()
     with dashboard_api_cache_lock:
         item = dashboard_api_cache.get(key)
@@ -8011,6 +8030,36 @@ def dashboard_api_cache_invalidate(prefixes: tuple[str, ...] | None = None) -> N
         for key in list(dashboard_api_cache.keys()):
             if any(key.startswith(prefix) for prefix in prefixes):
                 dashboard_api_cache.pop(key, None)
+
+
+def refresh_live_scan_dashboard_snapshot(
+    records: list[dict],
+    checked_ids_total: int,
+    *,
+    admin_statistics: dict | None = None,
+    scan_errors: list[dict] | None = None,
+) -> None:
+    report_dir = Path(settings.report_dir)
+    report_dir.mkdir(parents=True, exist_ok=True)
+    dashboard_path = report_dir / "latest-scan-dashboard.html"
+    summary_text, stats = build_scan_report(
+        records,
+        checked_ids_total,
+        admin_statistics=admin_statistics,
+    )
+    stats["scan_errors"] = list(scan_errors or [])
+    stats["scan_skipped_users"] = []
+    stats["database"] = {
+        "path": str(database_path()),
+        "source": "live_scan",
+    }
+    dashboard_html = build_scan_dashboard_html(stats)
+    atomic_write_text(dashboard_path, dashboard_html)
+    publish_dashboard_file(dashboard_path, latest_name="latest-scan-dashboard.html")
+    live_json_path = report_dir / "latest-scan-live.json"
+    live_txt_path = report_dir / "latest-scan-live.txt"
+    atomic_write_text(live_json_path, json.dumps(stats, ensure_ascii=False, indent=2))
+    atomic_write_text(live_txt_path, summary_text)
 
 
 def dashboard_api_cache_key(api_name: str, api_parts: list[str], query: str = "") -> str:
@@ -12858,7 +12907,8 @@ def build_scan_dashboard_html(stats: dict) -> str:
           processRefreshInfo.textContent = `РќРµ СѓРґР°Р»РѕСЃСЊ РѕР±РЅРѕРІРёС‚СЊ live-СЃРѕСЃС‚РѕСЏРЅРёРµ: ${{error}}`;
         }} finally {{
           clearTimeout(overviewRefreshTimer);
-          overviewRefreshTimer = setTimeout(refreshOverview, 15000);
+          const nextRefreshMs = (adminOverview.processes && adminOverview.processes.scan_active) ? 2500 : 8000;
+          overviewRefreshTimer = setTimeout(refreshOverview, nextRefreshMs);
         }}
       }}
 
@@ -13991,8 +14041,10 @@ async def scan_all_users_in_admin_bot(
         user_failures: dict[str, int] = {}
         scan_db_conn: sqlite3.Connection | None = None
         pending_db_writes = 0
-        db_commit_batch = 25
+        db_commit_batch = 1
         db_last_commit_at = 0.0
+        last_live_dashboard_at = 0.0
+        live_dashboard_refresh_interval_seconds = 2.0
 
         def remember_scan_error(user_id: str, stage: str, error: Exception) -> None:
             scan_errors.append(
@@ -14017,6 +14069,21 @@ async def scan_all_users_in_admin_bot(
             last_progress_text = text
             last_progress_at = now_monotonic
             await progress_callback(text)
+
+        def refresh_live_scan_artifacts(force: bool = False) -> None:
+            nonlocal last_live_dashboard_at
+            now_monotonic = loop.time()
+            if not force and (now_monotonic - last_live_dashboard_at) < live_dashboard_refresh_interval_seconds:
+                return
+            records_for_dashboard = load_latest_records_from_database() or list(records)
+            refresh_live_scan_dashboard_snapshot(
+                records_for_dashboard,
+                checked_ids_total,
+                admin_statistics=admin_statistics_snapshot,
+                scan_errors=scan_errors,
+            )
+            dashboard_api_cache_invalidate(DASHBOARD_REALTIME_CACHE_PREFIXES)
+            last_live_dashboard_at = now_monotonic
 
         if checkpoint:
             await emit_progress(
@@ -14190,6 +14257,7 @@ async def scan_all_users_in_admin_bot(
                                         scan_db_conn.commit()
                                         pending_db_writes = 0
                                         db_last_commit_at = now_monotonic
+                                        refresh_live_scan_artifacts()
                                 else:
                                     upsert_latest_record(record)
                             except Exception:
@@ -14220,6 +14288,7 @@ async def scan_all_users_in_admin_bot(
                                 scan_db_conn.commit()
                                 pending_db_writes = 0
                                 db_last_commit_at = now_monotonic
+                                refresh_live_scan_artifacts(force=True)
                             last_checkpoint_at = now_monotonic
                             last_checkpoint_checked_ids = checked_ids_total
 
@@ -14250,6 +14319,7 @@ async def scan_all_users_in_admin_bot(
                         scan_db_conn.commit()
                         pending_db_writes = 0
                         db_last_commit_at = loop.time()
+                        refresh_live_scan_artifacts(force=True)
                     await emit_progress(
                         (
                             f"РЎРµСЃСЃРёСЏ scan Р·Р°РІРёСЃР»Р°/СЃР»РѕРјР°Р»Р°СЃСЊ РЅР° ID {current_user_id}. "
@@ -14283,6 +14353,7 @@ async def scan_all_users_in_admin_bot(
                     scan_db_conn.commit()
                     pending_db_writes = 0
                     db_last_commit_at = loop.time()
+                    refresh_live_scan_artifacts(force=True)
                 await emit_progress(
                     f"РџРµСЂРµР·Р°РїСѓСЃРєР°СЋ scan-СЃРµСЃСЃРёСЋ Рё РїСЂРѕРґРѕР»Р¶Р°СЋ СЃ ID {current_user_id}.",
                     force=True,
@@ -14295,6 +14366,7 @@ async def scan_all_users_in_admin_bot(
             if scan_db_conn:
                 if pending_db_writes > 0:
                     scan_db_conn.commit()
+                    refresh_live_scan_artifacts(force=True)
                 scan_db_conn.close()
 
         if reset_requested:
@@ -15886,6 +15958,15 @@ async def handle_private_message(event: events.NewMessage.Event) -> None:
         log_action_event("route", sender_id=sender_id, route="explicit_requester_command", text=incoming_text)
         pending_smart_actions.pop(sender_id, None)
         pending_gpt_requests.pop(sender_id, None)
+        cancelled_workflows = cancel_pending_requester_workflows(sender_id)
+        if cancelled_workflows:
+            log_action_event(
+                "route",
+                sender_id=sender_id,
+                route="pending_requester_workflows_cleared",
+                workflows=",".join(cancelled_workflows),
+                text=incoming_text,
+            )
         if mark_active_gpt_request(sender_id, suppress_output=True, reason="interrupted_by_command"):
             active_gpt_requests.pop(sender_id, None)
 
