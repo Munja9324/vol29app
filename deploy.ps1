@@ -15,6 +15,7 @@ Set-Location -LiteralPath $Repo
 
 function Resolve-PythonExe {
     $candidates = @(
+        "C:\Python\python.exe",
         "C:\Users\VOL29\AppData\Local\Programs\Python\Python314\python.exe",
         "C:\Users\VOL29\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe"
     )
