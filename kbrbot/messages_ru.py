@@ -29,7 +29,7 @@ MESSAGES_RU = {
     "wizard.sent_after_confirm": "Карточка отправлена после подтверждения",
     "wizard.send_extra_failed": "Не удалось отправить карточку с дополнением",
     "scan.started_clean": "Сканирование по ID запущено с чистого состояния.",
-    "scan.resume_found": "Найден сохраненный прогресс scan по ID.",
+    "scan.resume_found": "Найден сохранённый прогресс scan по ID.",
     "status.long_text_as_file": "Полный текст слишком большой для Telegram. Отправляю файлом.",
 }
 

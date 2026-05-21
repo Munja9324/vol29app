@@ -12,6 +12,7 @@ import shutil
 import sqlite3
 import socket
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -26,7 +27,11 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote, unquote, urlsplit
 from urllib.request import ProxyHandler, Request, build_opener, urlopen
 
-from dotenv import load_dotenv
+try:
+    from dotenv import load_dotenv
+except Exception:  # pragma: no cover - local toolchain fallback
+    def load_dotenv(*args, **kwargs):
+        return False
 from telethon.errors import FloodWaitError, MediaCaptionTooLongError, MessageNotModifiedError, MessageTooLongError
 from telethon import Button, TelegramClient, events
 from kbrbot.core import text_sanitize as ts
@@ -7056,6 +7061,22 @@ def build_live_root_panel_html() -> str:
       <h1>РљР°СЂС‚РѕС‡РєР° РїРѕР»СЊР·РѕРІР°С‚РµР»СЏ</h1>
       <div class="grid" id="meta"></div>
       <div class="panel" style="margin-top:10px;padding:10px">
+        <div class="muted" style="margin-bottom:6px">Что лучше сделать сейчас</div>
+        <div id="recommendationsBox" class="event-log"></div>
+      </div>
+      <div class="panel" style="margin-top:10px;padding:10px">
+        <div class="muted" style="margin-bottom:6px">Подписки пользователя</div>
+        <div id="subscriptionsBox" class="event-log"></div>
+      </div>
+      <div class="panel" style="margin-top:10px;padding:10px">
+        <div class="muted" style="margin-bottom:6px">История обращений</div>
+        <div id="supportHistoryBox" class="event-log"></div>
+      </div>
+      <div class="panel" style="margin-top:10px;padding:10px">
+        <div class="muted" style="margin-bottom:6px">История действий по пользователю</div>
+        <div id="userActionsBox" class="event-log"></div>
+      </div>
+      <div class="panel" style="margin-top:10px;padding:10px">
         <div class="muted" style="margin-bottom:8px">РўРµРєСЃС‚ РґР»СЏ Mail / Wizard</div>
         <textarea id="message" placeholder="Р’РІРµРґРёС‚Рµ С‚РµРєСЃС‚ СЃРѕРѕР±С‰РµРЅРёСЏ"></textarea>
         <div class="scenarios">
@@ -7082,7 +7103,7 @@ def build_live_root_panel_html() -> str:
         <div class="status" id="status">Р’С‹Р±РµСЂРё РїРѕР»СЊР·РѕРІР°С‚РµР»СЏ СЃР»РµРІР°.</div>
         <div id="eventLog" class="event-log"></div>
         <div class="panel" style="margin-top:10px;padding:10px">
-          <div class="muted" style="margin-bottom:6px">История действий</div>
+          <div class="muted" style="margin-bottom:6px">Общая история действий</div>
           <div id="actionsLog" class="event-log"></div>
         </div>
         <div class="panel" style="margin-top:10px;padding:10px">
@@ -7125,7 +7146,12 @@ def build_live_root_panel_html() -> str:
     const eventLog = document.getElementById("eventLog");
     const actionsLog = document.getElementById("actionsLog");
     const errorsLog = document.getElementById("errorsLog");
+    const recommendationsBox = document.getElementById("recommendationsBox");
+    const subscriptionsBox = document.getElementById("subscriptionsBox");
+    const supportHistoryBox = document.getElementById("supportHistoryBox");
+    const userActionsBox = document.getElementById("userActionsBox");
     let selected = null;
+    let selectedDetail = null;
     let activeJobId = "";
     let pollTimer = null;
     const actionApiBase = "root-api";
@@ -7315,8 +7341,13 @@ def build_live_root_panel_html() -> str:
       `).join("") || `<div class="item"><div class="muted">РќРёС‡РµРіРѕ РЅРµ РЅР°Р№РґРµРЅРѕ</div></div>`;
     }}
     function renderMeta() {{
-      if (!selected) {{
+      const current = selectedDetail || selected;
+      if (!current) {{
         meta.innerHTML = '<div class="card"><div class="muted">РџРѕР»СЊР·РѕРІР°С‚РµР»СЊ РЅРµ РІС‹Р±СЂР°РЅ</div></div>';
+        if (recommendationsBox) recommendationsBox.innerHTML = "<div>Выберите пользователя</div>";
+        if (subscriptionsBox) subscriptionsBox.innerHTML = "<div>Нет данных</div>";
+        if (supportHistoryBox) supportHistoryBox.innerHTML = "<div>Нет данных</div>";
+        if (userActionsBox) userActionsBox.innerHTML = "<div>Нет данных</div>";
         return;
       }}
       const cards = [];
@@ -7331,31 +7362,89 @@ def build_live_root_panel_html() -> str:
         cards.push(`<div class="card"${{full ? ' style="grid-column: 1 / -1;"' : ""}}><div class="muted">${{esc(label)}}</div><b>${{esc(text)}}</b></div>`);
       }};
 
-      const requestsTotal = Number(selected.requests_count ?? 0);
-      const incomingCount = Number(selected.incoming_count ?? 0);
-      const wizardCount = Number(selected.wizard_count ?? 0);
-      const mailCount = Number(selected.mail_count ?? 0);
-      const hasRequestInfo = requestsTotal > 0 || incomingCount > 0 || wizardCount > 0 || mailCount > 0 || Boolean(selected.last_request_at) || Boolean(selected.last_request_text);
-      addCardAllowZero("ID", selected.user_id);
-      addCard("Username", selected.username ? "@" + selected.username : "");
-      addCard("Регистрация", selected.registration_date || "");
-      addCardAllowZero("Подписок", selected.subscriptions);
-      addCard("Баланс", selected.balance_rub_text || "");
-      addCard("Всего пополнено", selected.total_topped_up_rub_text || "");
-      addCard("Локации", selected.locations || "");
-      addCard("Ближайшее истечение", selected.nearest_expiration || "");
-      addCard("Дней до окончания", selected.days_left !== "" ? selected.days_left : "");
+      const requestsTotal = Number(current.requests_count ?? 0);
+      const incomingCount = Number(current.incoming_count ?? 0);
+      const openRequestsCount = Number(current.open_requests_count ?? 0);
+      const wizardCount = Number(current.wizard_count ?? 0);
+      const mailCount = Number(current.mail_count ?? 0);
+      const hasRequestInfo = requestsTotal > 0 || incomingCount > 0 || openRequestsCount > 0 || wizardCount > 0 || mailCount > 0 || Boolean(current.last_request_at) || Boolean(current.last_request_text);
+      addCardAllowZero("ID", current.user_id);
+      addCard("Username", current.username ? "@" + current.username : "");
+      addCard("Регистрация", current.registration_date || "");
+      addCardAllowZero("Подписок", current.subscriptions);
+      addCard("Баланс", current.balance_rub_text || "");
+      addCard("Всего пополнено", current.total_topped_up_rub_text || "");
+      addCard("Локации", current.locations || "");
+      addCard("Ближайшее истечение", current.nearest_expiration || "");
+      addCard("Дней до окончания", current.days_left !== "" ? current.days_left : "");
 
       if (hasRequestInfo) {{
         addCardAllowZero("Всего обращений", requestsTotal);
         if (incomingCount > 0) addCardAllowZero("Входящие обращения", incomingCount);
+        if (openRequestsCount > 0) addCardAllowZero("Открытые обращения", openRequestsCount);
         if (wizardCount > 0) addCardAllowZero("Отправок в Wizard", wizardCount);
         if (mailCount > 0) addCardAllowZero("Отправок сообщений", mailCount);
-        addCard("Последнее обращение", selected.last_request_at || "");
-        addCard("Текст последнего обращения", selected.last_request_text || "", true);
+        addCard("Последнее обращение", current.last_request_at || "");
+        addCard("Текст последнего обращения", current.last_request_text || "", true);
       }}
 
       meta.innerHTML = cards.join("") || '<div class="card"><div class="muted">Нет данных</div></div>';
+      renderDetailCollections(current);
+    }}
+
+    function renderDetailCollections(current) {{
+      const recommendations = Array.isArray(current.recommendations) ? current.recommendations : [];
+      if (recommendationsBox) {{
+        recommendationsBox.innerHTML = recommendations.length
+          ? recommendations.map(item => `<div>• ${{esc(item)}}</div>`).join("")
+          : "<div>Нет рекомендаций</div>";
+      }}
+
+      const subs = Array.isArray(current.subscriptions_preview) ? current.subscriptions_preview : [];
+      if (subscriptionsBox) {{
+        subscriptionsBox.innerHTML = subs.length
+          ? subs.map(sub => {{
+              const id = esc(sub.subscription_id || sub.button_text || "-");
+              const loc = esc(sub.location || "-");
+              const exp = esc(sub.expires_at || "-");
+              const left = String(sub.days_left ?? "").trim();
+              return `<div>[${{id}}] ${{loc}} | до: ${{exp}}${{left ? " | дней: " + esc(left) : ""}}</div>`;
+            }}).join("")
+          : "<div>Подписок нет</div>";
+      }}
+
+      const supportHistory = Array.isArray(current.support_history) ? current.support_history : [];
+      if (supportHistoryBox) {{
+        supportHistoryBox.innerHTML = supportHistory.length
+          ? supportHistory.map(item => `<div>[${{esc(item.created_at || "-")}}] ${{esc(item.reason || item.source || "-")}} | ${{esc(item.status || "-")}} | ${{esc(item.preview || "-")}}</div>`).join("")
+          : "<div>Обращений пока нет</div>";
+      }}
+
+      const actionHistory = Array.isArray(current.action_history) ? current.action_history : [];
+      if (userActionsBox) {{
+        userActionsBox.innerHTML = actionHistory.length
+          ? actionHistory.map(item => `<div>[${{esc(item.created_at || "-")}}] ${{esc(item.action || "-")}} | ${{esc(item.status || "-")}} | ${{esc(item.preview || "-")}}</div>`).join("")
+          : "<div>Действий по пользователю пока нет</div>";
+      }}
+    }}
+
+    async function loadSelectedDetail() {{
+      if (!selected || !selected.user_id) {{
+        selectedDetail = null;
+        renderMeta();
+        return;
+      }}
+      const lookup = encodeURIComponent(String(selected.user_id || "").trim());
+      try {{
+        const r = await fetch(`${{actionApiBase}}/user/${{lookup}}`, {{ cache: "no-store" }});
+        const p = await r.json();
+        if (!r.ok || !p.ok || !p.user) throw new Error((p && p.error) || "bad_response");
+        selectedDetail = p.user;
+      }} catch (e) {{
+        selectedDetail = null;
+        pushEvent(`Не удалось загрузить детали пользователя: ${{e}}`);
+      }}
+      renderMeta();
     }}
     async function pollJob(jobId) {{
       if (pollTimer) clearTimeout(pollTimer);
@@ -7436,7 +7525,16 @@ def build_live_root_panel_html() -> str:
         if (!r.ok || !p.ok || !p.services) throw new Error("bad_response");
         const data = p.services;
         updated.textContent = `РћР±РЅРѕРІР»РµРЅРѕ: ${{data.generated_at || "-"}}`;
-        body.innerHTML = (data.services || []).map(s => `<tr><td>${{esc(s.service)}}</td><td>${{esc(s.status)}}</td></tr>`).join("") || "<tr><td colspan='2'>РќРµС‚ РґР°РЅРЅС‹С…</td></tr>";
+        const serviceRows = (data.services || []).map(s => `<tr><td>${{esc(s.service)}}</td><td>${{esc(s.status)}}</td></tr>`);
+        const metrics = data.metrics || {{}};
+        const metricRows = [
+          ["Хост", metrics.hostname || "-"],
+          ["Uptime", metrics.uptime || "-"],
+          ["Load average", metrics.load_average || "-"],
+          ["Память", metrics.memory || "-"],
+          ["Диск /", metrics.disk_root || "-"],
+        ].map(([k, v]) => `<tr><td>${{esc(k)}}</td><td>${{esc(v)}}</td></tr>`);
+        body.innerHTML = [...serviceRows, ...metricRows].join("") || "<tr><td colspan='2'>Нет данных</td></tr>";
       }} catch (e) {{
         body.innerHTML = `<tr><td colspan='2'>РћС€РёР±РєР°: ${{esc(e)}}</td></tr>`;
       }}
@@ -7451,6 +7549,8 @@ def build_live_root_panel_html() -> str:
         if (!r.ok || !p.ok || !p.overview) throw new Error("bad_response");
         const ov = p.overview;
         const proc = ov.processes || {{}};
+        const db = ov.database || {{}};
+        const summary = ov.summary || {{}};
         updated.textContent = `РћР±РЅРѕРІР»РµРЅРѕ: ${{ov.generated_at || "-"}}`;
         const rows = [
           ["Admin flow", proc.admin_flow || "-"],
@@ -7459,6 +7559,16 @@ def build_live_root_panel_html() -> str:
           ["Wizard pending", proc.wizard_pending ?? "-"],
           ["GPT active/pending", `${{proc.gpt_active ?? 0}} / ${{proc.gpt_pending ?? 0}}`],
           ["Unresolved open", ov.unresolved_open_count ?? 0],
+          ["Пользователей", summary.users_total ?? 0],
+          ["Платящих", summary.paid_users_total ?? 0],
+          ["Подписок", summary.subscriptions_total ?? 0],
+          ["Без подписки", summary.without_subscriptions_total ?? 0],
+          ["Истекают до 7 дней", summary.expiring_7_total ?? 0],
+          ["Истекли", summary.expired_total ?? 0],
+          ["База", db.exists ? "доступна" : "нет"],
+          ["Размер БД", db.size_bytes ? `${{Math.round(Number(db.size_bytes || 0) / 1024)}} KB` : "-"],
+          ["Последний scan", db.last_scan_at || "-"],
+          ["Последнее обновление users", db.latest_users_updated_at || "-"],
         ];
         body.innerHTML = rows.map(([k,v]) => `<tr><td>${{esc(k)}}</td><td>${{esc(v)}}</td></tr>`).join("");
       }} catch (e) {{
@@ -7608,8 +7718,10 @@ def build_live_root_panel_html() -> str:
       if (!row) return;
       const id = String(row.dataset.id || "");
       selected = filteredUsers().find(u => String(u.user_id) === id) || users.find(u => String(u.user_id) === id) || null;
+      selectedDetail = null;
       renderList();
       renderMeta();
+      loadSelectedDetail();
       statusBox.textContent = selected ? `Р’С‹Р±СЂР°РЅ РїРѕР»СЊР·РѕРІР°С‚РµР»СЊ ${{selected.user_id}}.` : "РџРѕР»СЊР·РѕРІР°С‚РµР»СЊ РЅРµ РІС‹Р±СЂР°РЅ.";
     }});
     list.addEventListener("click", () => {{
@@ -9310,6 +9422,7 @@ def dashboard_unresolved_rows(limit: int = 25) -> list[dict[str, object]]:
 
 def dashboard_live_overview_payload() -> dict[str, object]:
     version = collect_runtime_version_info()
+    summary = dashboard_root_summary_payload()
     return {
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "version": {
@@ -9318,8 +9431,43 @@ def dashboard_live_overview_payload() -> dict[str, object]:
             "started_at": str(version.get("started_at") or ""),
         },
         "processes": dashboard_process_snapshot(),
+        "summary": summary,
+        "database": dashboard_database_health_payload(summary),
         "unresolved_open_count": unresolved_requests_count(status="open"),
         "unresolved_rows": dashboard_unresolved_rows(limit=25),
+    }
+
+
+def dashboard_database_health_payload(summary: dict[str, object] | None = None) -> dict[str, object]:
+    db_path = database_path()
+    db_exists = db_path.exists()
+    last_scan_at = ""
+    latest_users_updated_at = ""
+    latest_run_id = 0
+    try:
+        with connect_database() as conn:
+            initialize_database(conn)
+            run_row = conn.execute(
+                "SELECT id, generated_at FROM scan_runs ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            if run_row:
+                latest_run_id = int(run_row["id"] or 0)
+                last_scan_at = str(run_row["generated_at"] or "")
+            user_row = conn.execute(
+                "SELECT updated_at FROM latest_users ORDER BY datetime(updated_at) DESC, user_id DESC LIMIT 1"
+            ).fetchone()
+            if user_row:
+                latest_users_updated_at = str(user_row["updated_at"] or "")
+    except Exception:
+        logging.exception("Failed to collect database health payload")
+    return {
+        "path": str(db_path),
+        "exists": db_exists,
+        "size_bytes": db_path.stat().st_size if db_exists else 0,
+        "last_scan_at": last_scan_at,
+        "latest_users_updated_at": latest_users_updated_at,
+        "latest_run_id": latest_run_id,
+        "summary": summary or {},
     }
 
 
@@ -9994,9 +10142,67 @@ def dashboard_server_services_payload() -> dict[str, object]:
         except Exception:
             status = "error"
         rows.append({"service": name, "status": status})
+
+    metrics = {
+        "hostname": "",
+        "uptime": "",
+        "load_average": "",
+        "memory": "",
+        "disk_root": "",
+        "python": sys.executable if "sys" in globals() else "",
+    }
+    try:
+        metrics["hostname"] = socket.gethostname()
+    except Exception:
+        pass
+    try:
+        uptime_result = subprocess.run(
+            ["uptime", "-p"],
+            capture_output=True,
+            text=True,
+            timeout=3,
+            check=False,
+        )
+        metrics["uptime"] = (uptime_result.stdout or uptime_result.stderr or "").strip()
+    except Exception:
+        pass
+    try:
+        load_result = subprocess.run(
+            ["sh", "-lc", "cut -d' ' -f1-3 /proc/loadavg"],
+            capture_output=True,
+            text=True,
+            timeout=3,
+            check=False,
+        )
+        metrics["load_average"] = (load_result.stdout or load_result.stderr or "").strip()
+    except Exception:
+        pass
+    try:
+        mem_result = subprocess.run(
+            ["sh", "-lc", "free -m | awk 'NR==2 {printf \"%s/%s MB\", $3, $2}'"],
+            capture_output=True,
+            text=True,
+            timeout=3,
+            check=False,
+        )
+        metrics["memory"] = (mem_result.stdout or mem_result.stderr or "").strip()
+    except Exception:
+        pass
+    try:
+        disk_result = subprocess.run(
+            ["sh", "-lc", "df -h / | awk 'NR==2 {printf \"%s used of %s (%s)\", $3, $2, $5}'"],
+            capture_output=True,
+            text=True,
+            timeout=3,
+            check=False,
+        )
+        metrics["disk_root"] = (disk_result.stdout or disk_result.stderr or "").strip()
+    except Exception:
+        pass
     return {
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "services": rows,
+        "metrics": metrics,
     }
 
 
@@ -10084,13 +10290,18 @@ def dashboard_root_users_payload(query: str = "") -> dict[str, object]:
         info = support_map.get(uid, {})
         row["requests_count"] = int(info.get("count") or 0)
         row["incoming_count"] = int(info.get("incoming_count") or 0)
+        row["open_requests_count"] = int(info.get("open_count") or 0)
         row["wizard_count"] = int(info.get("wizard_count") or 0)
         row["mail_count"] = int(info.get("mail_count") or 0)
         row["last_request_text"] = str(info.get("last_text") or "")
         row["last_request_at"] = str(info.get("last_at") or "")
+        row["last_action_at"] = str(info.get("last_action_at") or "")
+        row["last_action_text"] = str(info.get("last_action_text") or "")
+        row["attention_rank"] = int(info.get("attention_rank") or 0)
     return {
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "count": len(rows),
+        "summary": dashboard_root_summary_payload(records),
         "users": rows[:5000],
     }
 
@@ -10107,10 +10318,18 @@ def dashboard_root_user_detail_payload(user_lookup: str) -> dict[str, object] | 
     info = dashboard_support_summary_by_user_ids([uid]).get(uid, {})
     row["requests_count"] = int(info.get("count") or 0)
     row["incoming_count"] = int(info.get("incoming_count") or 0)
+    row["open_requests_count"] = int(info.get("open_count") or 0)
     row["wizard_count"] = int(info.get("wizard_count") or 0)
     row["mail_count"] = int(info.get("mail_count") or 0)
     row["last_request_text"] = str(info.get("last_text") or "")
     row["last_request_at"] = str(info.get("last_at") or "")
+    row["last_action_at"] = str(info.get("last_action_at") or "")
+    row["last_action_text"] = str(info.get("last_action_text") or "")
+    row["attention_rank"] = int(info.get("attention_rank") or 0)
+    row["support_history"] = dashboard_support_history_by_user_id(uid, limit=12)
+    row["action_history"] = dashboard_action_history_by_user_id(uid, limit=15)
+    row["recommendations"] = dashboard_user_recommendations(record, row)
+    row["subscriptions_preview"] = dashboard_subscription_preview_rows(record)
     row["raw_record"] = record
     return row
 
@@ -10124,7 +10343,7 @@ def dashboard_support_summary_by_user_ids(user_ids: list[str]) -> dict[str, dict
     try:
         with connect_database() as conn:
             initialize_database(conn)
-            rows = conn.execute(
+            support_rows = conn.execute(
                 f"""
                 SELECT sender_id, created_at, question_text, transcript_text
                 FROM unresolved_requests
@@ -10133,64 +10352,256 @@ def dashboard_support_summary_by_user_ids(user_ids: list[str]) -> dict[str, dict
                 """,
                 tuple(cleaned_ids),
             ).fetchall()
-        for row in rows:
-            uid = str(row["sender_id"] or "").strip()
-            if not uid:
-                continue
-            item = out.setdefault(
-                uid,
-                {
-                    "count": 0,
-                    "incoming_count": 0,
-                    "wizard_count": 0,
-                    "mail_count": 0,
-                    "last_text": "",
-                    "last_at": "",
-                },
-            )
-            item["count"] = int(item.get("count") or 0) + 1
-            item["incoming_count"] = int(item.get("incoming_count") or 0) + 1
-            if not item["last_at"]:
-                item["last_at"] = str(row["created_at"] or "")
-                text = str(row["question_text"] or "").strip() or str(row["transcript_text"] or "").strip()
-                item["last_text"] = text[:180]
+            action_rows = conn.execute(
+                f"""
+                SELECT resolved_user_id, action, status, created_at, result_text, error_text
+                FROM action_logs
+                WHERE resolved_user_id IN ({placeholders})
+                ORDER BY datetime(created_at) DESC, id DESC
+                """,
+                tuple(cleaned_ids),
+            ).fetchall()
 
-        action_rows = conn.execute(
-            f"""
-            SELECT resolved_user_id, action, status
-            FROM action_logs
-            WHERE resolved_user_id IN ({placeholders})
-            """,
-            tuple(cleaned_ids),
-        ).fetchall()
-        for row in action_rows:
-            uid = str(row["resolved_user_id"] or "").strip()
-            if not uid:
-                continue
-            status = str(row["status"] or "").strip().casefold()
-            if status != "done":
-                continue
-            action = str(row["action"] or "").strip().casefold()
-            item = out.setdefault(
-                uid,
-                {
-                    "count": 0,
-                    "incoming_count": 0,
-                    "wizard_count": 0,
-                    "mail_count": 0,
-                    "last_text": "",
-                    "last_at": "",
-                },
-            )
-            if action in {"wizard_card", "wizard_text", "replace_key", "delete_access"}:
-                item["wizard_count"] = int(item.get("wizard_count") or 0) + 1
+            def ensure_item(uid: str) -> dict[str, object]:
+                return out.setdefault(
+                    uid,
+                    {
+                        "count": 0,
+                        "incoming_count": 0,
+                        "open_count": 0,
+                        "wizard_count": 0,
+                        "mail_count": 0,
+                        "last_text": "",
+                        "last_at": "",
+                        "last_action_at": "",
+                        "last_action_text": "",
+                        "attention_rank": 0,
+                    },
+                )
+
+            for row in support_rows:
+                uid = str(row["sender_id"] or "").strip()
+                if not uid:
+                    continue
+                item = ensure_item(uid)
                 item["count"] = int(item.get("count") or 0) + 1
-            elif action in {"mail", "broadcast", "promo"}:
-                item["mail_count"] = int(item.get("mail_count") or 0) + 1
-                item["count"] = int(item.get("count") or 0) + 1
+                item["incoming_count"] = int(item.get("incoming_count") or 0) + 1
+                item["open_count"] = int(item.get("open_count") or 0) + 1
+                if not item["last_at"]:
+                    item["last_at"] = str(row["created_at"] or "")
+                    text = str(row["question_text"] or "").strip() or str(row["transcript_text"] or "").strip()
+                    item["last_text"] = text[:180]
+
+            for row in action_rows:
+                uid = str(row["resolved_user_id"] or "").strip()
+                if not uid:
+                    continue
+                status = str(row["status"] or "").strip().casefold()
+                if status != "done":
+                    continue
+                action = str(row["action"] or "").strip().casefold()
+                item = ensure_item(uid)
+                if action in {"wizard_card", "wizard_text", "replace_key", "delete_access"}:
+                    item["wizard_count"] = int(item.get("wizard_count") or 0) + 1
+                    item["count"] = int(item.get("count") or 0) + 1
+                elif action in {"mail", "broadcast", "promo"}:
+                    item["mail_count"] = int(item.get("mail_count") or 0) + 1
+                    item["count"] = int(item.get("count") or 0) + 1
+                if not item["last_action_at"]:
+                    item["last_action_at"] = str(row["created_at"] or "")
+                    preview = str(row["error_text"] or "").strip() or str(row["result_text"] or "").strip() or action
+                    item["last_action_text"] = preview[:180]
+
+            for item in out.values():
+                attention_rank = 0
+                if int(item.get("open_count") or 0) > 0:
+                    attention_rank += 30
+                if int(item.get("wizard_count") or 0) > 0:
+                    attention_rank += 10
+                if int(item.get("mail_count") or 0) > 0:
+                    attention_rank += 5
+                item["attention_rank"] = attention_rank
     except Exception:
         logging.exception("Failed to load support summary for users")
     return out
+
+
+def dashboard_support_history_by_user_id(user_id: str, limit: int = 12) -> list[dict[str, object]]:
+    cleaned = str(user_id or "").strip()
+    if not cleaned:
+        return []
+    rows_out: list[dict[str, object]] = []
+    try:
+        with connect_database() as conn:
+            initialize_database(conn)
+            rows = conn.execute(
+                """
+                SELECT created_at, source, reason, status, question_text, transcript_text, resolution_note
+                FROM unresolved_requests
+                WHERE sender_id = ?
+                ORDER BY datetime(created_at) DESC, id DESC
+                LIMIT ?
+                """,
+                (cleaned, max(1, min(int(limit), 100))),
+            ).fetchall()
+        for row in rows:
+            preview = str(row["question_text"] or "").strip() or str(row["transcript_text"] or "").strip()
+            rows_out.append(
+                {
+                    "created_at": str(row["created_at"] or ""),
+                    "source": str(row["source"] or ""),
+                    "reason": str(row["reason"] or ""),
+                    "status": str(row["status"] or ""),
+                    "preview": preview[:240],
+                    "resolution_note": str(row["resolution_note"] or "")[:240],
+                }
+            )
+    except Exception:
+        logging.exception("Failed to load support history for user_id=%s", cleaned)
+    return rows_out
+
+
+def dashboard_action_history_by_user_id(user_id: str, limit: int = 15) -> list[dict[str, object]]:
+    cleaned = str(user_id or "").strip()
+    if not cleaned:
+        return []
+    rows_out: list[dict[str, object]] = []
+    try:
+        with connect_database() as conn:
+            initialize_database(conn)
+            rows = conn.execute(
+                """
+                SELECT created_at, action, status, result_text, error_text, user_lookup
+                FROM action_logs
+                WHERE resolved_user_id = ?
+                ORDER BY datetime(created_at) DESC, id DESC
+                LIMIT ?
+                """,
+                (cleaned, max(1, min(int(limit), 100))),
+            ).fetchall()
+        for row in rows:
+            text = str(row["error_text"] or "").strip() or str(row["result_text"] or "").strip()
+            rows_out.append(
+                {
+                    "created_at": str(row["created_at"] or ""),
+                    "action": str(row["action"] or ""),
+                    "status": str(row["status"] or ""),
+                    "user_lookup": str(row["user_lookup"] or ""),
+                    "preview": text[:240],
+                }
+            )
+    except Exception:
+        logging.exception("Failed to load action history for user_id=%s", cleaned)
+    return rows_out
+
+
+def dashboard_subscription_preview_rows(record: dict | None) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    if not isinstance(record, dict):
+        return rows
+    for sub in list(record.get("subscriptions") or []):
+        detail_text = str(sub.get("detail_text") or "")
+        expires_at = extract_expiration_date(detail_text)
+        days_left = ""
+        if expires_at:
+            days_left = str((expires_at.date() - datetime.now().date()).days)
+        rows.append(
+            {
+                "subscription_id": str(sub.get("subscription_id") or "").strip(),
+                "location": str(sub.get("location") or "").strip(),
+                "button_text": str(sub.get("button_text") or "").strip(),
+                "expires_at": expires_at.strftime("%Y-%m-%d") if expires_at else "",
+                "days_left": days_left,
+            }
+        )
+    return rows[:20]
+
+
+def dashboard_user_recommendations(record: dict | None, row: dict[str, object]) -> list[str]:
+    recommendations: list[str] = []
+    status = str(row.get("status") or "").strip()
+    subs = int(row.get("subscriptions") or 0)
+    open_requests = int(row.get("open_requests_count") or 0)
+    wizard_count = int(row.get("wizard_count") or 0)
+    days_left_raw = row.get("days_left")
+    try:
+        days_left = int(days_left_raw) if str(days_left_raw).strip() != "" else None
+    except Exception:
+        days_left = None
+
+    if open_requests > 0:
+        recommendations.append("У пользователя есть открытые обращения. Сначала закройте текущий вопрос, потом отправляйте новое действие.")
+    if status == "expired":
+        recommendations.append("Подписка уже истекла. Подойдёт промокод, продление или ручная проверка оплаты.")
+    elif status == "expiring_7":
+        recommendations.append("Подписка скоро закончится. Хороший момент для мягкого напоминания о продлении.")
+    elif status == "no_subs":
+        recommendations.append("Подписок нет. Можно предложить пробный промокод или аккуратную рассылку.")
+    elif status == "unknown_date":
+        recommendations.append("Дата окончания не распознана. Имеет смысл точечно перепроверить подписку через /subs.")
+    if subs > 1:
+        recommendations.append("У пользователя несколько подписок. Перед отправкой в поддержку лучше уточнить, о какой именно идёт речь.")
+    if wizard_count >= 3:
+        recommendations.append("По пользователю уже было много действий через Wizard. Стоит посмотреть историю перед новым обращением.")
+    if isinstance(record, dict):
+        balance = record.get("parsed_profile", {}).get("balance_rub") if isinstance(record.get("parsed_profile"), dict) else None
+        if isinstance(balance, (int, float)) and balance > 0:
+            recommendations.append("На балансе есть деньги. Если доступа нет, проверьте, не зависло ли продление.")
+    if days_left is not None and days_left <= 3 and days_left >= 0:
+        recommendations.append("До окончания осталось совсем мало времени. Пользователя лучше обработать в приоритетном порядке.")
+    if not recommendations:
+        recommendations.append("Пользователь выглядит стабильным. Можно действовать обычным сценарием через Mail или Wizard.")
+    return recommendations[:6]
+
+
+def dashboard_root_summary_payload(records: list[dict] | None = None) -> dict[str, object]:
+    records_local = list(records) if records is not None else load_latest_records_from_database()
+    totals = consistent_totals(records_local)
+    users_total = int(totals.get("users_total") or 0)
+    subscriptions_total = int(totals.get("subscriptions_total") or 0)
+    paid_users = sum(1 for record in records_local if list(record.get("subscriptions") or []))
+    no_subs = max(0, users_total - paid_users)
+    expiring_7 = 0
+    expired = 0
+    total_balance = 0.0
+    total_topped_up = 0.0
+    for row in json.loads(admin_user_rows_json(records_local) or "[]"):
+        status = str(row.get("status") or "")
+        if status == "expiring_7":
+            expiring_7 += 1
+        elif status == "expired":
+            expired += 1
+        try:
+            if isinstance(row.get("balance_rub"), (int, float)):
+                total_balance += float(row.get("balance_rub") or 0.0)
+            if isinstance(row.get("total_topped_up_rub"), (int, float)):
+                total_topped_up += float(row.get("total_topped_up_rub") or 0.0)
+        except Exception:
+            continue
+    stats = {
+        "records": records_local,
+        "users_total": users_total,
+        "users_with_subscriptions_total": paid_users,
+        "subscriptions_total": subscriptions_total,
+        "scan_errors": [],
+        "forecast": {
+            "estimated_mrr_rub": round(subscriptions_total * FORECAST_PRICE_PER_SUBSCRIPTION_RUB, 2),
+            "financial_projection": {},
+        },
+    }
+    analysis = analyze_business_status(stats)
+    return {
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "users_total": users_total,
+        "paid_users_total": paid_users,
+        "subscriptions_total": subscriptions_total,
+        "without_subscriptions_total": no_subs,
+        "expiring_7_total": expiring_7,
+        "expired_total": expired,
+        "total_balance_rub": round(total_balance, 2),
+        "total_topped_up_rub": round(total_topped_up, 2),
+        "analysis": analysis,
+    }
 
 
 def load_latest_record_from_database(user_id: str) -> dict | None:
@@ -12854,11 +13265,16 @@ def build_scan_dashboard_html(stats: dict) -> str:
 
       function renderProcesses() {{
         const processes = adminOverview.processes || {{}};
+        const summary = adminOverview.summary || {{}};
+        const analysis = summary.analysis || {{}};
         processCards.innerHTML = `
           <div class="card"><div class="k">Admin flow</div><div class="v">${{escapeText(processes.admin_flow || "-")}}</div></div>
           <div class="card"><div class="k">Scan</div><div class="v">${{processes.scan_active ? "РђРєС‚РёРІРµРЅ" : "РЎРІРѕР±РѕРґРµРЅ"}}</div></div>
           <div class="card"><div class="k">Mail2</div><div class="v">${{processes.mail2_active ? "РђРєС‚РёРІРЅР°" : "РЎРІРѕР±РѕРґРЅР°"}}</div></div>
-          <div class="card"><div class="k">GPT</div><div class="v">${{escapeText(processes.gpt_active || 0)}} active / ${{escapeText(processes.gpt_pending || 0)}} pending</div></div>
+          <div class="card"><div class="k">Пользователей</div><div class="v">${{escapeText(summary.users_total || 0)}}</div></div>
+          <div class="card"><div class="k">Платящих</div><div class="v">${{escapeText(summary.paid_users_total || 0)}}</div></div>
+          <div class="card"><div class="k">Подписок</div><div class="v">${{escapeText(summary.subscriptions_total || 0)}}</div></div>
+          <div class="card"><div class="k">MRR</div><div class="v">${{escapeText(Math.round(Number(analysis.estimated_mrr_rub || 0)))}} RUB</div></div>
         `;
         processStateBody.innerHTML = `
           <tr><td>Admin bot</td><td>${{escapeText(processes.admin_bot || "-")}}</td></tr>
@@ -12866,6 +13282,9 @@ def build_scan_dashboard_html(stats: dict) -> str:
           <tr><td>Scan owner</td><td>${{escapeText(processes.scan_owner_id || "-")}}</td></tr>
           <tr><td>Scan delay</td><td>${{escapeText(processes.scan_delay_seconds || 0)}}s</td></tr>
           <tr><td>Auto-resume</td><td>${{processes.scan_auto_resume ? "Р”Р°" : "РќРµС‚"}}</td></tr>
+          <tr><td>Без подписки</td><td>${{escapeText(summary.without_subscriptions_total || 0)}}</td></tr>
+          <tr><td>Истекают до 7 дней</td><td>${{escapeText(summary.expiring_7_total || 0)}}</td></tr>
+          <tr><td>Истекли</td><td>${{escapeText(summary.expired_total || 0)}}</td></tr>
         `;
         processMetaBody.innerHTML = `
           <tr><td>Wizard pending</td><td>${{escapeText(processes.wizard_pending || 0)}}</td></tr>
@@ -12873,6 +13292,8 @@ def build_scan_dashboard_html(stats: dict) -> str:
           <tr><td>Smart pending</td><td>${{escapeText(processes.smart_pending || 0)}}</td></tr>
           <tr><td>Pending TTL</td><td>${{escapeText(processes.pending_ttl_seconds || 0)}}s</td></tr>
           <tr><td>РЎР»РµРґСѓСЋС‰РёР№ user_id</td><td>${{escapeText(processes.scan_next_user_id || "-")}}</td></tr>
+          <tr><td>MRR</td><td>${{escapeText(Math.round(Number(analysis.estimated_mrr_rub || 0)))}} RUB</td></tr>
+          <tr><td>Рост / месяц</td><td>${{escapeText(((Number(analysis.monthly_growth_rate || 0)) * 100).toFixed(1))}}%</td></tr>
         `;
         processRefreshInfo.textContent = `РџРѕСЃР»РµРґРЅРµРµ РѕР±РЅРѕРІР»РµРЅРёРµ: ${{escapeText(adminOverview.generated_at || "-")}}`;
       }}
